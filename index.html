@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tienda Online AWS</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, sans-serif; background: #f0f2f5; min-height: 100vh; padding: 30px 20px; }
+    h1 { text-align: center; color: #232f3e; margin-bottom: 30px; font-size: 1.8rem; }
+    .container { max-width: 650px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    .card { background: white; border-radius: 8px; padding: 24px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .card h2 { color: #232f3e; margin-bottom: 16px; font-size: 1.1rem; border-bottom: 2px solid #ff9900; padding-bottom: 8px; }
+    label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; margin-top: 12px; }
+    input[type=text], input[type=number] {
+      width: 100%; padding: 10px 12px; border: 1px solid #ddd;
+      border-radius: 6px; font-size: 0.95rem; outline: none;
+    }
+    input:focus { border-color: #ff9900; box-shadow: 0 0 0 2px rgba(255,153,0,0.2); }
+    button {
+      margin-top: 16px; width: 100%; padding: 11px;
+      background: #ff9900; color: white; border: none;
+      border-radius: 6px; font-size: 1rem; cursor: pointer; font-weight: bold;
+    }
+    button:hover { background: #e68a00; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+
+    .status-card { display: none; }
+    .status-card.visible { display: block; }
+    .status-badge {
+      display: inline-block; padding: 4px 14px; border-radius: 20px;
+      font-weight: bold; font-size: 0.9rem; margin-left: 8px;
+    }
+    .status-PENDING { background: #fff3cd; color: #856404; }
+    .status-COMPLETED { background: #d1e7dd; color: #0a3622; }
+
+    .order-detail { margin-top: 12px; }
+    .order-detail p { padding: 6px 0; border-bottom: 1px solid #f0f0f0; font-size: 0.95rem; }
+    .order-detail p:last-child { border-bottom: none; }
+    .order-detail span { font-weight: bold; color: #232f3e; }
+
+    .refresh-note { font-size: 0.8rem; color: #888; margin-top: 10px; text-align: center; }
+    #countdown { font-weight: bold; color: #ff9900; }
+
+    .alert { padding: 12px; border-radius: 6px; margin-top: 12px; font-size: 0.9rem; }
+    .alert-success { background: #d1e7dd; color: #0a3622; }
+    .alert-error { background: #f8d7da; color: #842029; }
+    .alert-info { background: #cff4fc; color: #055160; }
+  </style>
+</head>
+<body>
+  <h1>🛒 Tienda Online AWS</h1>
+
+  <div class="container">
+
+    <!-- CREAR PEDIDO -->
+    <div class="card">
+      <h2>📦 Crear nuevo pedido</h2>
+      <label for="product">Producto</label>
+      <input id="product" type="text" placeholder="Ej: Camiseta, Libro, Auriculares..." />
+      <label for="quantity">Cantidad</label>
+      <input id="quantity" type="number" value="1" min="1" />
+      <button id="btnCreate" onclick="createOrder()">Crear pedido</button>
+      <div id="createAlert"></div>
+    </div>
+
+    <!-- ESTADO DEL PEDIDO -->
+    <div class="card status-card" id="statusCard">
+      <h2>📋 Estado del pedido</h2>
+      <div class="order-detail" id="orderDetail"></div>
+      <button id="btnRefresh" style="display:none" onclick="manualRefresh()">🔄 Actualizar estado</button>
+	  <p class="refresh-note" id="refreshNote"></p>
+    </div>
+
+    <!-- CONSULTAR PEDIDO MANUAL -->
+    <div class="card">
+      <h2>🔍 Consultar pedido por ID</h2>
+      <label for="orderId">ID del pedido</label>
+      <input id="orderId" type="text" placeholder="Pega aquí el ID del pedido" />
+      <button onclick="getOrder()">Ver estado</button>
+      <div id="searchAlert"></div>
+    </div>
+
+  </div>
+
+  <script>
+    const API = 'https://hhtlef9bf2.execute-api.eu-north-1.amazonaws.com';
+    let refreshInterval = null;
+    let countdownInterval = null;
+    let secondsLeft = 0;
+
+    async function createOrder() {
+      const product = document.getElementById('product').value.trim();
+      const quantity = parseInt(document.getElementById('quantity').value);
+      const btn = document.getElementById('btnCreate');
+      const alert = document.getElementById('createAlert');
+
+      if (!product) {
+        showAlert(alert, 'Por favor introduce un nombre de producto.', 'error');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Creando pedido...';
+      alert.innerHTML = '';
+
+      try {
+        const res = await fetch(`${API}/orders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ product, quantity })
+        });
+        const data = await res.json();
+
+        showAlert(alert,
+          `✅ Pedido creado correctamente. ID: <code>${data.id || data.orderId}</code>`,
+          'success'
+        );
+
+        const orderId = data.id || data.orderId;
+        document.getElementById('orderId').value = orderId;
+        document.getElementById('product').value = '';
+
+        // Mostrar estado y empezar a refrescar
+        await showOrderStatus(orderId, product, quantity);
+        startAutoRefresh(orderId);
+
+      } catch (err) {
+        showAlert(alert, '❌ Error al crear el pedido. Revisa la consola.', 'error');
+        console.error(err);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Crear pedido';
+      }
+    }
+
+    async function getOrder() {
+      const orderId = document.getElementById('orderId').value.trim();
+      const alert = document.getElementById('searchAlert');
+
+      if (!orderId) {
+        showAlert(alert, 'Por favor introduce un ID de pedido.', 'error');
+        return;
+      }
+
+      alert.innerHTML = '';
+      try {
+        const res = await fetch(`${API}/orders/${orderId}`);
+        const data = await res.json();
+
+        if (res.status === 404) {
+          showAlert(alert, '❌ Pedido no encontrado.', 'error');
+          return;
+        }
+
+        showAlert(alert, '✅ Pedido encontrado.', 'success');
+        await showOrderStatus(orderId, data.product, data.quantity, data);
+		startAutoRefresh(orderId);
+      } catch (err) {
+        showAlert(alert, '❌ Error al consultar. Revisa la consola.', 'error');
+        console.error(err);
+      }
+    }
+
+    async function showOrderStatus(orderId, product, quantity, existingData) {
+      const card = document.getElementById('statusCard');
+      const detail = document.getElementById('orderDetail');
+      card.classList.add('visible');
+
+      let data = existingData;
+      if (!data) {
+        try {
+          const res = await fetch(`${API}/orders/${orderId}`);
+          data = await res.json();
+        } catch (e) {
+          data = { Id: orderId, status: 'PENDING', product, quantity };
+        }
+      }
+
+      const status = data.status || 'PENDING';
+      const statusClass = `status-${status}`;
+
+      detail.innerHTML = `
+        <p>🆔 <span>ID:</span> ${data.Id || orderId}</p>
+        <p>📦 <span>Producto:</span> ${data.product || product || '-'}</p>
+        <p>🔢 <span>Cantidad:</span> ${data.quantity || quantity || '-'}</p>
+        <p>📅 <span>Creado:</span> ${data.createdAt ? new Date(data.createdAt).toLocaleString('es-ES') : '-'}</p>
+        <p>📊 <span>Estado:</span> <span class="status-badge ${statusClass}">${status}</span></p>
+      `;
+
+      return status;
+    }
+
+    let currentOrderId = null;
+
+function startAutoRefresh(orderId) {
+  currentOrderId = orderId;
+  document.getElementById('btnRefresh').style.display = 'block';
+  document.getElementById('refreshNote').innerHTML = 'Pulsa el botón para actualizar el estado.';
+}
+
+function stopAutoRefresh() {
+  // ya no hay intervalos que limpiar
+}
+
+async function manualRefresh() {
+  if (!currentOrderId) return;
+  const btn = document.getElementById('btnRefresh');
+  btn.disabled = true;
+  btn.textContent = '⏳ Consultando...';
+
+  try {
+    const res = await fetch(`${API}/orders/${currentOrderId}`);
+    const data = await res.json();
+    const status = await showOrderStatus(currentOrderId, data.product, data.quantity, data);
+
+    if (status === 'COMPLETED') {
+      document.getElementById('btnRefresh').style.display = 'none';
+      document.getElementById('refreshNote').innerHTML =
+        '✅ Pedido procesado. Deberías recibir un email de confirmación.';
+    }
+  } catch (e) {
+    console.error(e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Actualizar estado';
+  }
+}
+
+    function showAlert(el, msg, type) {
+      el.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+    }
+  </script>
+</body>
+</html>
